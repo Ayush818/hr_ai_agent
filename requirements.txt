@@ -1,3 +1,15 @@
-pip install -U langchain-ollama langchain-chroma pydantic
-# Also ensure other core langchain packages are up to date if needed
-pip install -U langchain langchain-core langchain-text-splitters langchain-huggingface
+fastapi
+uvicorn
+sqlalchemy
+pydantic
+alembic
+python-jose[cryptography]
+passlib[bcrypt]
+langchain
+langchain-core
+langchain-ollama
+langchain-chroma
+langchain-text-splitters
+langchain-huggingface
+chromadb
+requests
