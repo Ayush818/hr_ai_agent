@@ -1,154 +1,161 @@
+# app_ui.py (Modifications)
+import json  # For pretty printing dicts
 import os
-import time  # For a slightly better UX with streaming-like effect
+import time
 
-import requests  # To make HTTP requests to our FastAPI backend
+import requests
 import streamlit as st
 
 # --- Configuration ---
-FASTAPI_URL = "http://localhost:8000/ask"  # URL of your FastAPI backend
-POLICY_DOCS_PATH = "policies"  # For the admin uploader
+FASTAPI_URL_CHAT = "http://localhost:8000/chat"  # Updated endpoint
+POLICY_DOCS_PATH = "policies"
 
 
+# ... (trigger_ingestion and Admin Sidebar can remain largely the same) ...
 # --- Helper Function for Admin: Policy Ingestion Trigger ---
-# This is a simplified approach. In a more robust app, the FastAPI backend
-# would handle the ingestion process via an API endpoint.
-# For now, uploading a file here will require you to MANUALLY re-run ingest.py.
 def trigger_ingestion():
-    # This function is a placeholder.
-    # Ideally, this would call an API endpoint on your FastAPI backend
-    # that then runs the ingestion logic.
-    # For now, it just reminds the user.
     st.sidebar.info(
-        "Policy file uploaded. Please re-run `python ingest.py` in your terminal to update the knowledge base."
+        "Policy file uploaded. Please re-run `python ingest.py` and restart the FastAPI backend to update the knowledge base."
     )
-    # Example of how you might try to run it (but this has limitations in Streamlit's cloud environment):
-    # try:
-    #     st.sidebar.write("Attempting to re-run ingestion (experimental)...")
-    #     result = subprocess.run(["python", "ingest.py"], capture_output=True, text=True, check=True)
-    #     st.sidebar.success("Ingestion script ran.")
-    #     st.sidebar.code(result.stdout)
-    #     if result.stderr:
-    #         st.sidebar.error(result.stderr)
-    # except Exception as e:
-    #     st.sidebar.error(f"Could not auto-run ingest.py: {e}")
-    #     st.sidebar.warning("Please run `python ingest.py` manually from your project's venv terminal.")
 
 
 # --- Streamlit App Layout ---
 st.set_page_config(page_title="HR AI Agent", layout="wide")
 
 st.title("🏢 HR AI Agent Chatbot")
-st.caption("Ask me anything about company policies!")
+st.caption(
+    "Ask policy questions or apply for leave (e.g., 'I want to apply for vacation next week from Monday to Friday')."
+)
 
-# --- Admin Section (Sidebar) for Policy Upload ---
+# --- Admin Section (Sidebar) ---
 with st.sidebar:
     st.header("⚙️ Admin Panel")
     st.subheader("Upload New Policies")
-    uploaded_file = st.file_uploader(
+    uploaded_files = st.file_uploader(  # Renamed from uploaded_file
         "Upload policy documents (.txt, .pdf, .md)",
         type=["txt", "pdf", "md"],
-        accept_multiple_files=True,  # Allow uploading multiple files at once
+        accept_multiple_files=True,
     )
 
-    if uploaded_file:
+    if uploaded_files:  # Iterate if multiple files
         all_successful = True
-        for file in uploaded_file:
+        for file in uploaded_files:
             try:
-                # Save the file to the policies directory
-                # Ensure the 'policies' directory exists
                 os.makedirs(POLICY_DOCS_PATH, exist_ok=True)
                 file_path = os.path.join(POLICY_DOCS_PATH, file.name)
                 with open(file_path, "wb") as f:
                     f.write(file.getbuffer())
-                st.sidebar.success(
-                    f"'{file.name}' uploaded successfully to '{POLICY_DOCS_PATH}/'."
-                )
+                st.sidebar.success(f"'{file.name}' uploaded to '{POLICY_DOCS_PATH}/'.")
             except Exception as e:
                 st.sidebar.error(f"Error uploading '{file.name}': {e}")
                 all_successful = False
-        if all_successful:
-            trigger_ingestion()  # Remind user to re-run ingest.py
+        if (
+            all_successful and uploaded_files
+        ):  # Check if any files were actually uploaded
+            trigger_ingestion()
 
     st.markdown("---")
     st.subheader("ℹ️ System Info")
     st.markdown(f"**Knowledge Base:** `{POLICY_DOCS_PATH}/`")
     st.markdown(f"**Vector DB:** `chroma_db_hr/`")
-    st.markdown(f"**FastAPI Backend:** `{FASTAPI_URL}`")
+    st.markdown(f"**FastAPI Chat Endpoint:** `{FASTAPI_URL_CHAT}`")
 
 
 # --- Chat Interface ---
-# Initialize chat history
 if "messages" not in st.session_state:
     st.session_state.messages = [
         {
             "role": "assistant",
-            "content": "Hello! How can I help you with company policies today?",
+            "content": "Hello! How can I help with policies or leave requests?",
         }
     ]
 
-# Display chat messages from history on app rerun
+if "current_leave_form" not in st.session_state:  # To store partially filled form data
+    st.session_state.current_leave_form = {}
+
+
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
-        if (
-            message["role"] == "assistant"
-            and "sources" in message
-            and message["sources"]
-        ):
-            with st.expander("Sources Used"):
-                for i, source in enumerate(message["sources"]):
-                    st.caption(
-                        f"Source {i+1}: {source['metadata'].get('source', 'N/A')}"
-                    )
-                    st.markdown(
-                        f"```text\n{source['page_content'][:300]}...\n```"
-                    )  # Show snippet
+        if message["role"] == "assistant":
+            if "sources" in message and message["sources"]:
+                with st.expander("Sources Used (Policy Q&A)"):
+                    for i, source in enumerate(message["sources"]):
+                        st.caption(
+                            f"Source {i+1}: {source['metadata'].get('source', 'N/A')}"
+                        )
+                        st.markdown(f"```text\n{source['page_content'][:300]}...\n```")
+            if (
+                "data" in message
+                and message["data"]
+                and message.get("response_type") == "clarification_needed"
+            ):
+                with st.expander("Information Extracted So Far"):
+                    st.json(message["data"])
 
-# React to user input
-if prompt := st.chat_input("Ask your question here..."):
-    # Display user message in chat message container
+
+if prompt := st.chat_input("What can I help you with?"):
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
 
-    # Display assistant response in chat message container
     with st.chat_message("assistant"):
         message_placeholder = st.empty()
         full_response_content = ""
-        source_documents_for_display = []
+        response_data_for_display = None
+        source_documents_for_display = None
+        response_type = "error"  # Default
 
         try:
-            # Prepare payload for FastAPI
-            payload = {"query": prompt}
-            response = requests.post(
-                FASTAPI_URL, json=payload, timeout=60
+            payload = {"query": prompt, "user_id": 1}  # Hardcoding user_id=1 for now
+            # Combine with any partially filled form data for context if needed (more advanced)
+            # if st.session_state.current_leave_form:
+            #    payload["contextual_form_data"] = st.session_state.current_leave_form
+
+            api_response = requests.post(
+                FASTAPI_URL_CHAT, json=payload, timeout=90
             )  # Increased timeout
-            response.raise_for_status()  # Raise an exception for HTTP errors (4XX or 5XX)
+            api_response.raise_for_status()
 
-            api_response_data = response.json()
-            full_response_content = api_response_data.get(
-                "answer", "Sorry, I couldn't get an answer from the backend."
+            response_json = api_response.json()
+            response_type = response_json.get("response_type", "error")
+            full_response_content = response_json.get(
+                "message", "Sorry, an issue occurred."
             )
-            source_documents_for_display = api_response_data.get("source_documents", [])
+            response_data_for_display = response_json.get("data")
+            source_documents_for_display = response_json.get("source_documents")
 
-            # Simulate stream of response with milliseconds delay for better UX
-            # (Real streaming would require backend changes)
-            for chunk in full_response_content.split():
-                message_placeholder.markdown(
-                    full_response_content[: len(chunk)] + "▌"
-                )  # Show current part
-                time.sleep(0.05)
+            # Simulate stream for UX
+            # for chunk_word in full_response_content.split():
+            #     message_placeholder.markdown(full_response_content[:len(chunk_word)] + "▌")
+            #     time.sleep(0.05)
             message_placeholder.markdown(full_response_content)  # Display full message
 
-            if source_documents_for_display:
-                with st.expander("Sources Used"):
+            if response_type == "clarification_needed" and response_data_for_display:
+                st.session_state.current_leave_form = (
+                    response_data_for_display  # Store for next turn
+                )
+                with st.expander("Information Extracted So Far"):
+                    st.json(response_data_for_display)
+            elif response_type == "leave_submitted":
+                st.session_state.current_leave_form = (
+                    {}
+                )  # Clear form on successful submission
+                if (
+                    response_data_for_display
+                    and "request_id" in response_data_for_display
+                ):
+                    st.success(
+                        f"Leave Request ID: {response_data_for_display['request_id']}"
+                    )
+
+            if source_documents_for_display and response_type == "policy_answer":
+                with st.expander("Sources Used (Policy Q&A)"):
                     for i, source in enumerate(source_documents_for_display):
                         st.caption(
                             f"Source {i+1}: {source['metadata'].get('source', 'N/A')}"
                         )
-                        st.markdown(
-                            f"```text\n{source['page_content'][:300]}...\n```"
-                        )  # Show snippet
+                        st.markdown(f"```text\n{source['page_content'][:300]}...\n```")
 
         except requests.exceptions.Timeout:
             full_response_content = (
@@ -156,22 +163,29 @@ if prompt := st.chat_input("Ask your question here..."):
             )
             message_placeholder.error(full_response_content)
         except requests.exceptions.ConnectionError:
-            full_response_content = f"Sorry, I couldn't connect to the AI backend at {FASTAPI_URL}. Is it running?"
+            full_response_content = f"Sorry, I couldn't connect to the AI backend at {FASTAPI_URL_CHAT}. Is it running?"
             message_placeholder.error(full_response_content)
         except requests.exceptions.RequestException as e:
-            full_response_content = (
-                f"An error occurred while communicating with the backend: {e}"
-            )
+            full_response_content = f"Error communicating with backend: {e}. Response: {api_response.text if 'api_response' in locals() else 'N/A'}"
             message_placeholder.error(full_response_content)
         except Exception as e:
-            full_response_content = f"An unexpected error occurred: {e}"
+            full_response_content = f"An unexpected error occurred in UI: {e}"
             message_placeholder.error(full_response_content)
 
-    # Add assistant response to chat history
     st.session_state.messages.append(
         {
             "role": "assistant",
             "content": full_response_content,
-            "sources": source_documents_for_display,  # Store sources with the message
+            "sources": (
+                source_documents_for_display
+                if response_type == "policy_answer"
+                else None
+            ),
+            "data": (
+                response_data_for_display
+                if response_type == "clarification_needed"
+                else None
+            ),
+            "response_type": response_type,
         }
     )
